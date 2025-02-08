@@ -7,17 +7,17 @@
     It also creates an overview report summarizing the status of all servers. Email reports can be sent if configured.
 
 .EXAMPLE
-    .\Get-DefenderReport.ps1 -CsvPath "C:\Downloads\defender-servers.csv" -Parallel 10
+    .\Get-DefenderReport.ps1 -CsvPath "C:\Downloads\defender-servers-csv.csv" -Parallel 10
 
 .NOTES
     Author: Adapted for PowerShell Core 7.x
-    Version: 2.5
+    Version: 2.6
     Date: 2023-10-10
 #>
 
 #region Parameters
 param (
-    [string]$CsvPath = "C:\Downloads\defender-servers.csv", # Path to CSV file with server names
+    [string]$CsvPath = "C:\Downloads\defender-servers-csv.csv", # Path to CSV file with server names
     [int]$Parallel = 5, # Number of servers to process in parallel
     [switch]$DebugMode, # Enable debug output
     [switch]$SendEmail # Send email report
@@ -162,14 +162,14 @@ $defenderResults = $servers | ForEach-Object -Parallel {
     # Define the Test-Online function inside the parallel block
     function Test-Online {
         param (
-            [string]$ComputerName
+            [string]${ComputerName}
         )
 
         try {
-            $pingResult = Test-Connection -ComputerName $ComputerName -Count 2 -ErrorAction Stop
+            $pingResult = Test-Connection -ComputerName ${ComputerName} -Count 2 -ErrorAction Stop
             return $pingResult.Status -eq "Success"
         } catch {
-            Write-Warning "Failed to ping $ComputerName: $($_.Exception.Message)"
+            Write-Warning "Failed to ping ${ComputerName}: $($_.Exception.Message)"
             return $false
         }
     }
@@ -177,20 +177,20 @@ $defenderResults = $servers | ForEach-Object -Parallel {
     # Define the Get-DefenderStatus function inside the parallel block
     function Get-DefenderStatus {
         param (
-            [string]$ServerName
+            [string]${ServerName}
         )
 
         try {
-            $defenderStatus = Invoke-Command -ComputerName $ServerName -ScriptBlock {
+            $defenderStatus = Invoke-Command -ComputerName ${ServerName} -ScriptBlock {
                 Get-MpComputerStatus -ErrorAction Stop
             } -ErrorAction Stop
 
-            $defenderThreats = Invoke-Command -ComputerName $ServerName -ScriptBlock {
+            $defenderThreats = Invoke-Command -ComputerName ${ServerName} -ScriptBlock {
                 Get-MpThreat -ErrorAction SilentlyContinue
             } -ErrorAction SilentlyContinue
 
             [PSCustomObject]@{
-                ServerName           = $ServerName
+                ServerName           = ${ServerName}
                 DefenderEnabled      = if ($defenderStatus.AntivirusEnabled) { "Enabled" } else { "Disabled" }
                 RealTimeProtection   = if ($defenderStatus.RealTimeProtectionEnabled) { "Enabled" } else { "Disabled" }
                 DefinitionAge        = "$($defenderStatus.AntivirusSignatureAge) days"
@@ -198,7 +198,7 @@ $defenderResults = $servers | ForEach-Object -Parallel {
                 ThreatsFound         = if ($defenderThreats) { $defenderThreats.Count } else { "None" }
             }
         } catch {
-            Write-Warning "Failed to retrieve Defender status for $ServerName: $($_.Exception.Message)"
+            Write-Warning "Failed to retrieve Defender status for ${ServerName}: $($_.Exception.Message)"
             return $null
         }
     }
@@ -208,10 +208,10 @@ $defenderResults = $servers | ForEach-Object -Parallel {
         Write-Host "Processing server: $server"
     }
 
-    if (Test-Online -ComputerName $server) {
-        Get-DefenderStatus -ServerName $server
+    if (Test-Online -ComputerName ${server}) {
+        Get-DefenderStatus -ServerName ${server}
     } else {
-        Write-Warning "Server $server is offline or unreachable."
+        Write-Warning "Server ${server} is offline or unreachable."
         $null
     }
 } -ThrottleLimit $Parallel
