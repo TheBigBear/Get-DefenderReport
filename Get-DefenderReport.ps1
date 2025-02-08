@@ -11,7 +11,7 @@
 
 .NOTES
     Author: Adapted for PowerShell Core 7.x
-    Version: 2.0
+    Version: 2.1
     Date: 2023-10-10
 #>
 
@@ -57,6 +57,20 @@ if (Test-Path $emailSettingsPath) {
 #endregion
 
 #region Functions
+function Test-Online {
+    param (
+        [string]$ComputerName
+    )
+
+    try {
+        $pingResult = Test-Connection -ComputerName $ComputerName -Count 2 -ErrorAction Stop
+        return $pingResult.Status -eq "Success"
+    } catch {
+        Write-Warning "Failed to ping $ComputerName: $_"
+        return $false
+    }
+}
+
 function Get-DefenderStatus {
     param (
         [string]$ServerName
@@ -191,7 +205,12 @@ $defenderResults = $servers | ForEach-Object -Parallel {
     if ($using:DebugMode) {
         Write-Host "Processing server: $server"
     }
-    Get-DefenderStatus -ServerName $server
+    if (Test-Online -ComputerName $server) {
+        Get-DefenderStatus -ServerName $server
+    } else {
+        Write-Warning "Server $server is offline or unreachable."
+        $null
+    }
 } -ThrottleLimit $Parallel
 
 # Generate individual reports
