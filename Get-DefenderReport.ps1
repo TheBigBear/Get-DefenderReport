@@ -11,7 +11,7 @@
 
 .NOTES
     Author: Adapted for PowerShell Core 7.x
-    Version: 2.3
+    Version: 2.4
     Date: 2023-10-10
 #>
 
@@ -199,8 +199,9 @@ try {
     exit 1
 }
 
-# Define the Test-Online function inside the parallel script block
-$testOnlineScriptBlock = {
+# Process servers in parallel
+$defenderResults = $servers | ForEach-Object -Parallel {
+    # Define the Test-Online function inside the parallel block
     function Test-Online {
         param (
             [string]$ComputerName
@@ -214,17 +215,11 @@ $testOnlineScriptBlock = {
             return $false
         }
     }
-}
 
-# Process servers in parallel
-$defenderResults = $servers | ForEach-Object -Parallel {
     $server = $_
     if ($using:DebugMode) {
         Write-Host "Processing server: $server"
     }
-
-    # Execute the Test-Online function script block
-    . $using:testOnlineScriptBlock
 
     if (Test-Online -ComputerName $server) {
         Get-DefenderStatus -ServerName $server
