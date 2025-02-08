@@ -11,7 +11,7 @@
 
 .NOTES
     Author: Adapted for PowerShell Core 7.x
-    Version: 2.4
+    Version: 2.5
     Date: 2023-10-10
 #>
 
@@ -57,48 +57,6 @@ if (Test-Path $emailSettingsPath) {
 #endregion
 
 #region Functions
-function Test-Online {
-    param (
-        [string]$ComputerName
-    )
-
-    try {
-        $pingResult = Test-Connection -ComputerName $ComputerName -Count 2 -ErrorAction Stop
-        return $pingResult.Status -eq "Success"
-    } catch {
-        Write-Warning "Failed to ping $ComputerName: $($_.Exception.Message)"
-        return $false
-    }
-}
-
-function Get-DefenderStatus {
-    param (
-        [string]$ServerName
-    )
-
-    try {
-        $defenderStatus = Invoke-Command -ComputerName $ServerName -ScriptBlock {
-            Get-MpComputerStatus -ErrorAction Stop
-        } -ErrorAction Stop
-
-        $defenderThreats = Invoke-Command -ComputerName $ServerName -ScriptBlock {
-            Get-MpThreat -ErrorAction SilentlyContinue
-        } -ErrorAction SilentlyContinue
-
-        [PSCustomObject]@{
-            ServerName           = $ServerName
-            DefenderEnabled      = if ($defenderStatus.AntivirusEnabled) { "Enabled" } else { "Disabled" }
-            RealTimeProtection   = if ($defenderStatus.RealTimeProtectionEnabled) { "Enabled" } else { "Disabled" }
-            DefinitionAge        = "$($defenderStatus.AntivirusSignatureAge) days"
-            LastFullScan         = if ($defenderStatus.FullScanEndTime) { $defenderStatus.FullScanEndTime.ToString() } else { "Never" }
-            ThreatsFound         = if ($defenderThreats) { $defenderThreats.Count } else { "None" }
-        }
-    } catch {
-        Write-Warning "Failed to retrieve Defender status for $ServerName: $($_.Exception.Message)"
-        return $null
-    }
-}
-
 function New-DefenderHTMLReport {
     param (
         [Parameter(Mandatory = $true)]
@@ -213,6 +171,35 @@ $defenderResults = $servers | ForEach-Object -Parallel {
         } catch {
             Write-Warning "Failed to ping $ComputerName: $($_.Exception.Message)"
             return $false
+        }
+    }
+
+    # Define the Get-DefenderStatus function inside the parallel block
+    function Get-DefenderStatus {
+        param (
+            [string]$ServerName
+        )
+
+        try {
+            $defenderStatus = Invoke-Command -ComputerName $ServerName -ScriptBlock {
+                Get-MpComputerStatus -ErrorAction Stop
+            } -ErrorAction Stop
+
+            $defenderThreats = Invoke-Command -ComputerName $ServerName -ScriptBlock {
+                Get-MpThreat -ErrorAction SilentlyContinue
+            } -ErrorAction SilentlyContinue
+
+            [PSCustomObject]@{
+                ServerName           = $ServerName
+                DefenderEnabled      = if ($defenderStatus.AntivirusEnabled) { "Enabled" } else { "Disabled" }
+                RealTimeProtection   = if ($defenderStatus.RealTimeProtectionEnabled) { "Enabled" } else { "Disabled" }
+                DefinitionAge        = "$($defenderStatus.AntivirusSignatureAge) days"
+                LastFullScan         = if ($defenderStatus.FullScanEndTime) { $defenderStatus.FullScanEndTime.ToString() } else { "Never" }
+                ThreatsFound         = if ($defenderThreats) { $defenderThreats.Count } else { "None" }
+            }
+        } catch {
+            Write-Warning "Failed to retrieve Defender status for $ServerName: $($_.Exception.Message)"
+            return $null
         }
     }
 
