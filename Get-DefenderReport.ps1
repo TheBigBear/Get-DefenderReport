@@ -11,7 +11,7 @@
 
 .NOTES
     Author: Adapted for PowerShell Core 7.x
-    Version: 2.1
+    Version: 2.3
     Date: 2023-10-10
 #>
 
@@ -66,7 +66,7 @@ function Test-Online {
         $pingResult = Test-Connection -ComputerName $ComputerName -Count 2 -ErrorAction Stop
         return $pingResult.Status -eq "Success"
     } catch {
-        Write-Warning "Failed to ping $ComputerName: $_"
+        Write-Warning "Failed to ping $ComputerName: $($_.Exception.Message)"
         return $false
     }
 }
@@ -94,7 +94,7 @@ function Get-DefenderStatus {
             ThreatsFound         = if ($defenderThreats) { $defenderThreats.Count } else { "None" }
         }
     } catch {
-        Write-Warning "Failed to retrieve Defender status for $ServerName: $_"
+        Write-Warning "Failed to retrieve Defender status for $ServerName: $($_.Exception.Message)"
         return $null
     }
 }
@@ -181,7 +181,7 @@ function Send-EmailReport {
         Send-MailMessage @emailParams -ErrorAction Stop
         Write-Host "Email report sent successfully."
     } catch {
-        Write-Error "Failed to send email report: $_"
+        Write-Error "Failed to send email report: $($_.Exception.Message)"
     }
 }
 #endregion
@@ -195,8 +195,25 @@ try {
         exit 1
     }
 } catch {
-    Write-Error "Failed to read CSV file: $_"
+    Write-Error "Failed to read CSV file: $($_.Exception.Message)"
     exit 1
+}
+
+# Define the Test-Online function inside the parallel script block
+$testOnlineScriptBlock = {
+    function Test-Online {
+        param (
+            [string]$ComputerName
+        )
+
+        try {
+            $pingResult = Test-Connection -ComputerName $ComputerName -Count 2 -ErrorAction Stop
+            return $pingResult.Status -eq "Success"
+        } catch {
+            Write-Warning "Failed to ping $ComputerName: $($_.Exception.Message)"
+            return $false
+        }
+    }
 }
 
 # Process servers in parallel
@@ -205,6 +222,10 @@ $defenderResults = $servers | ForEach-Object -Parallel {
     if ($using:DebugMode) {
         Write-Host "Processing server: $server"
     }
+
+    # Execute the Test-Online function script block
+    . $using:testOnlineScriptBlock
+
     if (Test-Online -ComputerName $server) {
         Get-DefenderStatus -ServerName $server
     } else {
