@@ -1,22 +1,37 @@
 <#
 .SYNOPSIS
-    Creates an HTML report of the local server's Microsoft Defender status.
+    Creates an HTML report of Microsoft Defender status for one or more servers.
 
 .DESCRIPTION
-    This script checks the local server's Microsoft Defender status and generates an HTML report.
-    The report includes information such as whether Defender is enabled, the status of the Defender service,
-    the age of virus definitions, the last full scan date, and any detected threats.
+    This script checks Microsoft Defender status for servers listed in a CSV file and generates individual HTML reports for each server.
+    It also creates an overview report summarizing the status of all servers. Email reports can be sent if configured.
 
 .EXAMPLE
-    .\Get-DefenderReport.ps1
+    .\Get-DefenderReport.ps1 -CsvPath "C:\Downloads\defender-servers.csv" -Parallel 10
 
 .NOTES
-    Author: Jason Dillman (adapted for local use)
-    Version: 1.0 (Localized)
+    Author: Adapted for PowerShell Core 7.x
+    Version: 2.0
     Date: 2023-10-10
 #>
 
-# Set the output directory
+#region Parameters
+param (
+    [string]$CsvPath = "C:\Downloads\defender-servers.csv", # Path to CSV file with server names
+    [int]$Parallel = 5, # Number of servers to process in parallel
+    [switch]$DebugMode, # Enable debug output
+    [switch]$SendEmail # Send email report
+)
+#endregion
+
+#region Check PowerShell Version
+if ($PSVersionTable.PSVersion.Major -lt 7) {
+    Write-Error "This script requires PowerShell Core 7.x or higher. Exiting."
+    exit 1
+}
+#endregion
+
+#region Configuration
 $outputDir = "C:\Downloads"
 if (-not (Test-Path $outputDir)) {
     New-Item -ItemType Directory -Path $outputDir | Out-Null
@@ -26,49 +41,178 @@ if (-not (Test-Path $outputDir)) {
 $modulePath = Join-Path -Path $outputDir -ChildPath "Report-Functions.psm1"
 Import-Module -Name $modulePath -Force
 
-# Get the FQDN of the server
-$serverFQDN = [System.Net.Dns]::GetHostByName($env:COMPUTERNAME).HostName
+# Load email settings from DPAPI-protected XML
+$emailSettingsPath = Join-Path -Path $outputDir -ChildPath "DefenderReportEmailSettings.xml"
+if (Test-Path $emailSettingsPath) {
+    try {
+        $emailSettings = Import-Clixml -Path $emailSettingsPath
+    } catch {
+        Write-Error "Failed to load email settings. Ensure the file exists and is properly encrypted. Exiting."
+        exit 1
+    }
+} else {
+    Write-Error "Email settings file not found. Exiting."
+    exit 1
+}
+#endregion
 
-# Generate a timestamp for the report filename
-$timestamp = Get-Date -Format "yyyy-MM-dd-HH-mm-ss"
+#region Functions
+function Get-DefenderStatus {
+    param (
+        [string]$ServerName
+    )
 
-# HTML report file path
-$htmlReportPath = Join-Path -Path $outputDir -ChildPath "$serverFQDN`_$timestamp.html"
+    try {
+        $defenderStatus = Invoke-Command -ComputerName $ServerName -ScriptBlock {
+            Get-MpComputerStatus -ErrorAction Stop
+        } -ErrorAction Stop
 
-# Get Microsoft Defender status
-try {
-    $defenderStatus = Get-MpComputerStatus -ErrorAction Stop
-    $defenderThreats = Get-MpThreat -ErrorAction SilentlyContinue
-} catch {
-    Write-Error "Failed to retrieve Microsoft Defender status. Ensure Microsoft Defender is installed and running."
-    exit
+        $defenderThreats = Invoke-Command -ComputerName $ServerName -ScriptBlock {
+            Get-MpThreat -ErrorAction SilentlyContinue
+        } -ErrorAction SilentlyContinue
+
+        [PSCustomObject]@{
+            ServerName           = $ServerName
+            DefenderEnabled      = if ($defenderStatus.AntivirusEnabled) { "Enabled" } else { "Disabled" }
+            RealTimeProtection   = if ($defenderStatus.RealTimeProtectionEnabled) { "Enabled" } else { "Disabled" }
+            DefinitionAge        = "$($defenderStatus.AntivirusSignatureAge) days"
+            LastFullScan         = if ($defenderStatus.FullScanEndTime) { $defenderStatus.FullScanEndTime.ToString() } else { "Never" }
+            ThreatsFound         = if ($defenderThreats) { $defenderThreats.Count } else { "None" }
+        }
+    } catch {
+        Write-Warning "Failed to retrieve Defender status for $ServerName: $_"
+        return $null
+    }
 }
 
-# Prepare Defender data for the report
-$defenderData = @(
-    [PSCustomObject]@{
-        'Computer Name'       = $env:COMPUTERNAME
-        'Defender Enabled'    = if ($defenderStatus.AntivirusEnabled) { "Enabled" } else { "Disabled" }
-        'Real-Time Protection'= if ($defenderStatus.RealTimeProtectionEnabled) { "Enabled" } else { "Disabled" }
-        'Definition Age'      = "$($defenderStatus.AntivirusSignatureAge) days"
-        'Last Full Scan'      = if ($defenderStatus.FullScanEndTime) { $defenderStatus.FullScanEndTime.ToString() } else { "Never" }
-        'Threats Found'       = if ($defenderThreats) { $defenderThreats.Count } else { "None" }
-        'Color Coding'        = @(
-            @{ Key = 'Defender Enabled'; Value = if (-not $defenderStatus.AntivirusEnabled) { 'ff0000' } else { '00ff00' } },
-            @{ Key = 'Real-Time Protection'; Value = if (-not $defenderStatus.RealTimeProtectionEnabled) { 'ff0000' } else { '00ff00' } },
-            @{ Key = 'Definition Age'; Value = if ($defenderStatus.AntivirusSignatureAge -gt 5) { 'ff7d00' } else { '00ff00' } },
-            @{ Key = 'Last Full Scan'; Value = if ($defenderStatus.FullScanEndTime -lt (Get-Date).AddDays(-14)) { 'ff7d00' } else { '00ff00' } },
-            @{ Key = 'Threats Found'; Value = if ($defenderThreats) { 'ff0000' } else { '00ff00' } }
-        )
-        'Primary Column Name' = 'Computer Name'
-        'Sort'                = 0
+function New-DefenderHTMLReport {
+    param (
+        [Parameter(Mandatory = $true)]
+        [array]$DefenderData
+    )
+
+    $htmlHeader = @"
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Microsoft Defender Status Report</title>
+    <style>
+        body { font-family: Arial, sans-serif; }
+        table { border-collapse: collapse; width: 100%; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+        th { background-color: #f2f2f2; }
+        tr:nth-child(even) { background-color: #f9f9f9; }
+        tr:hover { background-color: #f1f1f1; }
+        .red { background-color: #ffcccc; }
+        .orange { background-color: #ffd699; }
+    </style>
+</head>
+<body>
+    <h1>Microsoft Defender Status Report</h1>
+    <p>Generated on: $(Get-Date)</p>
+    <table>
+        <tr>
+            <th>Server Name</th>
+            <th>Defender Enabled</th>
+            <th>Real-Time Protection</th>
+            <th>Definition Age</th>
+            <th>Last Full Scan</th>
+            <th>Threats Found</th>
+        </tr>
+"@
+
+    $htmlRows = ""
+    foreach ($item in $DefenderData) {
+        $rowClass = if ($item.ThreatsFound -gt 0) { "red" } elseif ($item.DefinitionAge -gt 5) { "orange" }
+        $htmlRows += @"
+        <tr class="$rowClass">
+            <td>$($item.ServerName)</td>
+            <td>$($item.DefenderEnabled)</td>
+            <td>$($item.RealTimeProtection)</td>
+            <td>$($item.DefinitionAge)</td>
+            <td>$($item.LastFullScan)</td>
+            <td>$($item.ThreatsFound)</td>
+        </tr>
+"@
     }
-)
 
-# Generate the HTML report
-$htmlReport = $defenderData | New-HTMLReport
+    $htmlFooter = @"
+    </table>
+</body>
+</html>
+"@
 
-# Save the HTML report to file
-$htmlReport | Out-File -FilePath $htmlReportPath -Encoding UTF8
+    return $htmlHeader + $htmlRows + $htmlFooter
+}
 
-Write-Host "Microsoft Defender status report saved to: $htmlReportPath"
+function Send-EmailReport {
+    param (
+        [string]$Body,
+        [string]$Subject
+    )
+
+    $emailParams = @{
+        To         = $emailSettings.To
+        From       = $emailSettings.From
+        Subject    = $Subject
+        Body       = $Body
+        SmtpServer = $emailSettings.SmtpServer
+        Port       = $emailSettings.Port
+        Credential = New-Object System.Management.Automation.PSCredential -ArgumentList $emailSettings.UserName, ($emailSettings.Password | ConvertTo-SecureString)
+        UseSsl     = $true
+        BodyAsHtml = $true
+    }
+
+    try {
+        Send-MailMessage @emailParams -ErrorAction Stop
+        Write-Host "Email report sent successfully."
+    } catch {
+        Write-Error "Failed to send email report: $_"
+    }
+}
+#endregion
+
+#region Main Script
+# Read server names from CSV
+try {
+    $servers = Import-Csv -Path $CsvPath -Header "ServerName" | ForEach-Object { $_.ServerName }
+    if (-not $servers) {
+        Write-Error "No servers found in CSV file. Exiting."
+        exit 1
+    }
+} catch {
+    Write-Error "Failed to read CSV file: $_"
+    exit 1
+}
+
+# Process servers in parallel
+$defenderResults = $servers | ForEach-Object -Parallel {
+    $server = $_
+    if ($using:DebugMode) {
+        Write-Host "Processing server: $server"
+    }
+    Get-DefenderStatus -ServerName $server
+} -ThrottleLimit $Parallel
+
+# Generate individual reports
+foreach ($result in $defenderResults) {
+    if ($result) {
+        $timestamp = Get-Date -Format "yyyy-MM-dd-HH-mm-ss"
+        $htmlReportPath = Join-Path -Path $outputDir -ChildPath "$($result.ServerName)_$timestamp.html"
+        $htmlReport = New-DefenderHTMLReport -DefenderData @($result)
+        $htmlReport | Out-File -FilePath $htmlReportPath -Encoding UTF8
+        Write-Host "Report saved for $($result.ServerName) at $htmlReportPath"
+    }
+}
+
+# Generate overview report
+$overviewReportPath = Join-Path -Path $outputDir -ChildPath "Overview-Defender-Report_$(Get-Date -Format 'yyyy-MM-dd-HH-mm-ss').html"
+$overviewReport = New-DefenderHTMLReport -DefenderData $defenderResults
+$overviewReport | Out-File -FilePath $overviewReportPath -Encoding UTF8
+Write-Host "Overview report saved at $overviewReportPath"
+
+# Send email report if enabled
+if ($SendEmail) {
+    Send-EmailReport -Body $overviewReport -Subject "Microsoft Defender Overview Report"
+}
+#endregion
