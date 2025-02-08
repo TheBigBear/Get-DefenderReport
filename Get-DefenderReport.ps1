@@ -22,71 +22,18 @@ if (-not (Test-Path $outputDir)) {
     New-Item -ItemType Directory -Path $outputDir | Out-Null
 }
 
+# Import the Report-Functions module
+$modulePath = Join-Path -Path $outputDir -ChildPath "Report-Functions.psm1"
+Import-Module -Name $modulePath -Force
+
+# Get the FQDN of the server
+$serverFQDN = [System.Net.Dns]::GetHostByName($env:COMPUTERNAME).HostName
+
+# Generate a timestamp for the report filename
+$timestamp = Get-Date -Format "yyyy-MM-dd-HH-mm-ss"
+
 # HTML report file path
-$htmlReportPath = Join-Path -Path $outputDir -ChildPath "DefenderStatusReport.html"
-
-# Function to create the HTML report
-function New-DefenderHTMLReport {
-    param (
-        [Parameter(Mandatory = $true)]
-        [array]$DefenderData
-    )
-
-    # HTML header and style
-    $htmlHeader = @"
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Microsoft Defender Status Report</title>
-    <style>
-        body { font-family: Arial, sans-serif; }
-        table { border-collapse: collapse; width: 100%; }
-        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
-        th { background-color: #f2f2f2; }
-        tr:nth-child(even) { background-color: #f9f9f9; }
-        tr:hover { background-color: #f1f1f1; }
-        .red { background-color: #ffcccc; }
-        .orange { background-color: #ffd699; }
-    </style>
-</head>
-<body>
-    <h1>Microsoft Defender Status Report</h1>
-    <p>Generated on: $(Get-Date)</p>
-    <table>
-        <tr>
-            <th>Property</th>
-            <th>Value</th>
-        </tr>
-"@
-
-    # HTML rows for Defender data
-    $htmlRows = ""
-    foreach ($item in $DefenderData) {
-        $rowClass = ""
-        if ($item.Value -like "*Disabled*" -or $item.Value -like "*Threat Found*") {
-            $rowClass = "red"
-        } elseif ($item.Value -like "*Outdated*") {
-            $rowClass = "orange"
-        }
-        $htmlRows += @"
-        <tr class="$rowClass">
-            <td>$($item.Key)</td>
-            <td>$($item.Value)</td>
-        </tr>
-"@
-    }
-
-    # HTML footer
-    $htmlFooter = @"
-    </table>
-</body>
-</html>
-"@
-
-    # Combine HTML parts
-    $htmlReport = $htmlHeader + $htmlRows + $htmlFooter
-    return $htmlReport
-}
+$htmlReportPath = Join-Path -Path $outputDir -ChildPath "$serverFQDN`_$timestamp.html"
 
 # Get Microsoft Defender status
 try {
@@ -99,15 +46,27 @@ try {
 
 # Prepare Defender data for the report
 $defenderData = @(
-    @{ Key = "Defender Enabled"; Value = if ($defenderStatus.AntivirusEnabled) { "Enabled" } else { "Disabled" } },
-    @{ Key = "Real-Time Protection"; Value = if ($defenderStatus.RealTimeProtectionEnabled) { "Enabled" } else { "Disabled" } },
-    @{ Key = "Antivirus Definitions Age"; Value = "$($defenderStatus.AntivirusSignatureAge) days" },
-    @{ Key = "Last Full Scan"; Value = if ($defenderStatus.FullScanEndTime) { $defenderStatus.FullScanEndTime.ToString() } else { "Never" } },
-    @{ Key = "Threats Found"; Value = if ($defenderThreats) { $defenderThreats.Count } else { "None" } }
+    [PSCustomObject]@{
+        'Computer Name'       = $env:COMPUTERNAME
+        'Defender Enabled'    = if ($defenderStatus.AntivirusEnabled) { "Enabled" } else { "Disabled" }
+        'Real-Time Protection'= if ($defenderStatus.RealTimeProtectionEnabled) { "Enabled" } else { "Disabled" }
+        'Definition Age'      = "$($defenderStatus.AntivirusSignatureAge) days"
+        'Last Full Scan'      = if ($defenderStatus.FullScanEndTime) { $defenderStatus.FullScanEndTime.ToString() } else { "Never" }
+        'Threats Found'       = if ($defenderThreats) { $defenderThreats.Count } else { "None" }
+        'Color Coding'        = @(
+            @{ Key = 'Defender Enabled'; Value = if (-not $defenderStatus.AntivirusEnabled) { 'ff0000' } else { '00ff00' } },
+            @{ Key = 'Real-Time Protection'; Value = if (-not $defenderStatus.RealTimeProtectionEnabled) { 'ff0000' } else { '00ff00' } },
+            @{ Key = 'Definition Age'; Value = if ($defenderStatus.AntivirusSignatureAge -gt 5) { 'ff7d00' } else { '00ff00' } },
+            @{ Key = 'Last Full Scan'; Value = if ($defenderStatus.FullScanEndTime -lt (Get-Date).AddDays(-14)) { 'ff7d00' } else { '00ff00' } },
+            @{ Key = 'Threats Found'; Value = if ($defenderThreats) { 'ff0000' } else { '00ff00' } }
+        )
+        'Primary Column Name' = 'Computer Name'
+        'Sort'                = 0
+    }
 )
 
 # Generate the HTML report
-$htmlReport = New-DefenderHTMLReport -DefenderData $defenderData
+$htmlReport = $defenderData | New-HTMLReport
 
 # Save the HTML report to file
 $htmlReport | Out-File -FilePath $htmlReportPath -Encoding UTF8
